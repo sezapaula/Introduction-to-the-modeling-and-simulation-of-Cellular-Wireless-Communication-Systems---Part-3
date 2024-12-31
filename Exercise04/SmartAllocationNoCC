@@ -1,0 +1,132 @@
+clear alclc; %Esse aqui deu certo
+%% Definição de parâmetros gerais da simulação
+tSQUARE = 900;  % tamanho do grid em M
+bT = 10^8;  % largura de banda em Hz
+nChannel = 1;  % número de canais (ajuste conforme necessário)
+UEpot = 1.2;  % potência de transmissão do usuário
+c = 10^-4;  % constante do modelo de propagação
+nmrUE = 13;  % número de usuários
+nmrAP = 64;  % número de APs
+k0 = 10^-20; % constante do ruído
+a = 4;  % expoente de pathloss
+
+%% Definição da posição dos APs e dos usuários
+APperdim = sqrt(nmrAP); %Número de APs "por linha"
+
+% Cria o vetor APcellular
+APcellular = linspace(tSQUARE / APperdim, tSQUARE, round(APperdim)) - tSQUARE / (2 * APperdim);
+
+% Forma a matriz APcellular
+APcellular = (repmat(APcellular, round(APperdim), 1) + 1j * repmat(APcellular.', 1, round(APperdim))) * 1;
+
+nmrSetups = 500;  % numero de repeticoes da simulacao
+
+% Geracao de posicoes aleatorias dos usuarios
+UElocations = (rand(nmrSetups, nmrUE) + 1i * rand(nmrSetups, nmrUE)) * tSQUARE;
+
+%% Definição de parâmetros do modelo de path
+% Cálculo de BC (largura de banda de cada canal)
+bc = bT / nChannel;
+
+% Potência do ruído
+pN = k0 * bc;
+
+% Sombreamento e fast fading
+shadow = lognrnd(0, 2, nmrSetups, nmrUE);
+rayleigh_fading = raylrnd(1/sqrt(2), [nmrSetups, nmrUE, nChannel]); %Componente de fast fading
+
+% Função para cálculo da potência recebida
+PReceiver = @(hor_distances, shadow) shadow .* UEpot .* (c ./ hor_distances.^a);  % potência recebida
+
+%% Lógica do cálculo de SINR, potência e interferências
+% Armazenamento de valores
+sinr = [];
+path_gain = zeros(nmrSetups, nmrUE, nChannel);  % Para armazenar o ganho de caminho de cada canal de cada usuário
+
+% Cálculo das potências recebidas e alocação de canais
+for i = 1:nmrSetups
+    pot_values = zeros(nmrAP, nmrUE);  % NmrAP X NmrUE
+
+    for ch = 1:nChannel
+        for j = 1:nmrUE
+            distances = abs(UElocations(i, j) - APcellular(:));  % Distância entre o usuário e todos os APs
+            pot_values(:, j) = PReceiver(distances, shadow(i, j)) .* rayleigh_fading(i, j, ch).^2;  % Potência recebida
+            
+            % Calculando o ganho de caminho para o canal e usuário para cada AP
+            %path_gain(i, j, ch) = pot_values(ap_id, j) / UEpot;
+            path_gain(i, j, ch) = pot_values(f, j) / UEpot;
+        end
+    end
+    
+    % Ordena os APs com base no path gain para cada usuário
+    for j = 1:nmrUE
+        [~, sorted_ap_indices] = sort(path_gain(i, j, :), 'descend');  % Ordena os APs pelo path gain
+        
+        % Atribui o canal com maior path gain para o usuário
+        user_channels(j) = sorted_ap_indices(1);  % Canal com maior path gain
+        
+        % Se necessário, alocar mais canais com base no sorted_ap_indices
+        % (Se tiver mais de 1 canal, ou quiser fazer alocação com mais critérios, ajustar aqui)
+    end
+    
+    % Contadores para usuários por canal
+    for f = 1:nmrAP
+        for u = 1:nmrUE
+            % Determina o canal que o usuário 'u' está usando
+            channel = user_channels(u);
+            
+            % Calcula a interferência do canal (potência de outros usuários no mesmo canal)
+            interference_power = 0;
+            for ch1 = 1:nmrUE
+                if user_channels(ch1) == channel && ch1 ~= u  % Se o canal for o mesmo, e não for o próprio usuário
+                    interference_power = interference_power + pot_values(f, ch1);
+                end
+            end
+            
+            % Cálculo da SINR
+            maiores_valores = max(pot_values, [], 1);  % Máxima potência (seleção)
+            sinr_value = maiores_valores(u) / (interference_power + pN);
+            sinr = [sinr, sinr_value];
+        end
+    end
+end
+
+%% Lógica do cálculo de capacidades
+conv_sinr = reshape(sinr,[nmrAP*nmrSetups,nmrUE]);
+Shannon = zeros(nmrSetups, nmrUE);
+
+for x = 1:nmrUE
+    for y = 1:nmrSetups*nmrAP
+        Shannon(y, x) = bc * log2(1 + conv_sinr(y, x));  
+    end
+end
+
+media = mean(sum(Shannon, 2)); % Cálculo da média da sum-capacity
+
+Shannon_ord = reshape(Shannon, 1, []);
+
+%% Eficiência Espectral
+efi = sum(Shannon, 2);
+res = efi / bT;
+SINR_ord=reshape(sinr,1,[]);
+%% Cálculos dos percentis
+porcento_10 = prctile(Shannon_ord, 10);  % percentil 10
+fprintf('Porcentil 10: %.4f\n', porcento_10 * 1e-6);
+
+porcento_50 = prctile(Shannon_ord, 50);  % percentil 50
+fprintf('Porcentil 50: %.4f\n', porcento_50 * 1e-6);
+
+porcento_90 = prctile(Shannon_ord, 90);  % percentil 90
+fprintf('Porcentil 90: %.4f\n', porcento_90 * 1e-6);
+%%
+%% Cálculo de sinr
+porcento_10SINR = prctile(SINR_ord, 10);  % percentil 10
+fprintf('Porcentil 10 da SINR: %.4f\n', pow2db(porcento_10SINR));
+
+porcento_50SINR = prctile(SINR_ord, 50);  % percentil 50
+fprintf('Porcentil 50 da SINR: %.4f\n', pow2db(porcento_50SINR));
+percentile_efi = prctile(res, 10);
+%%
+fprintf('Eficiência espectral: %.4f\n', percentile_efi);
+
+fprintf('Média da soma das capacidades: %.3f\n', media * 1e-6);
